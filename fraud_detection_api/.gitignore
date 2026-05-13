@@ -1,0 +1,14 @@
+# Ignore large/raw datasets and generated artifacts
+# Dataset CSV (too large for GitHub file-size limit)
+data/creditcard.csv
+
+# Processed splits (optional: large)
+data/X_*.csv
+data/y_*.csv
+
+# Preprocessor + reports (optional)
+models/*.pkl
+data/*.json
+
+data/*.png
+

@@ -1,0 +1,10 @@
+artifact_location: file:///C:/Users/bijal/project1/fraud_detection_api/mlruns/269374098852347652/models/m-b7788ba5fe2d4ed5b92ceef29e0f04d8/artifacts
+creation_timestamp: 1778582983248
+experiment_id: '269374098852347652'
+last_updated_timestamp: 1778582998803
+model_id: m-b7788ba5fe2d4ed5b92ceef29e0f04d8
+model_type: null
+name: xgboost_model
+source_run_id: 8eb9b67784044f03827abb09aa6564dd
+status: 2
+status_message: null

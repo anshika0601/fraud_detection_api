@@ -1,0 +1,23 @@
+artifact_path: file:///C:/Users/bijal/project1/fraud_detection_api/mlruns/308663023377989025/models/m-bb471f15e46c4fc08fb901acd4b20a7d/artifacts
+flavors:
+  lightgbm:
+    code: null
+    data: model.pkl
+    lgb_version: 4.6.0
+    model_class: lightgbm.sklearn.LGBMClassifier
+    serialization_format: cloudpickle
+    skops_trusted_types: null
+  python_function:
+    data: model.pkl
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.lightgbm
+    python_version: 3.11.0
+mlflow_version: 3.12.0
+model_id: m-bb471f15e46c4fc08fb901acd4b20a7d
+model_size_bytes: 2660550
+model_uuid: m-bb471f15e46c4fc08fb901acd4b20a7d
+prompts: null
+run_id: bc3c3d9e0ebd4628a9a821cc9b3b1c56
+utc_time_created: '2026-05-13 13:43:37.684192'

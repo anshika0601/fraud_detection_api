@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bijal/project1/fraud_detection_api/mlruns/269374098852347652/8eb9b67784044f03827abb09aa6564dd/artifacts
+end_time: 1778582998826
+entry_point_name: ''
+experiment_id: '269374098852347652'
+lifecycle_stage: active
+run_id: 8eb9b67784044f03827abb09aa6564dd
+run_name: XGBoost_Fraud_Detection
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778582968700
+status: 3
+tags: []
+user_id: bijal

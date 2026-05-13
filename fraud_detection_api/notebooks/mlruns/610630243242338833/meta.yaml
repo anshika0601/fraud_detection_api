@@ -1,0 +1,8 @@
+artifact_location: file:///C:/Users/bijal/project1/fraud_detection_api/notebooks/mlruns/610630243242338833
+creation_time: 1778381524765
+experiment_id: '610630243242338833'
+last_update_time: 1778381524765
+lifecycle_stage: active
+name: fraud_detection_xgboost
+trace_location: null
+workspace: default

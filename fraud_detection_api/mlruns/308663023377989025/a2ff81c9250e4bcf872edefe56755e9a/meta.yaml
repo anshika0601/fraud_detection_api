@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bijal/project1/fraud_detection_api/mlruns/308663023377989025/a2ff81c9250e4bcf872edefe56755e9a/artifacts
+end_time: 1778679946650
+entry_point_name: ''
+experiment_id: '308663023377989025'
+lifecycle_stage: active
+run_id: a2ff81c9250e4bcf872edefe56755e9a
+run_name: LightGBM_lr0.2_leaves15
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778679929469
+status: 3
+tags: []
+user_id: bijal

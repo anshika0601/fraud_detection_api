@@ -1,0 +1,8 @@
+artifact_location: file:///C:/Users/bijal/project1/mlruns/771730205357741338
+creation_time: 1778683299874
+experiment_id: '771730205357741338'
+last_update_time: 1778683299874
+lifecycle_stage: active
+name: fraud_detection_random_forest
+trace_location: null
+workspace: default

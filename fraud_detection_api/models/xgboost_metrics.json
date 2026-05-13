@@ -1,0 +1,53 @@
+{
+  "train": {
+    "roc_auc": 0.9999999999999999,
+    "pr_auc": 0.9999999999999999,
+    "accuracy": 0.9999866009218565,
+    "fraud_recall": 1.0,
+    "fraud_precision": 1.0,
+    "true_negatives": 199015,
+    "false_positives": 4,
+    "false_negatives": 0,
+    "true_positives": 99509,
+    "false_positive_rate": 2.0098583552324148e-05
+  },
+  "val": {
+    "roc_auc": 0.9455729675100204,
+    "pr_auc": 0.8016306759963342,
+    "accuracy": 0.9993679997191109,
+    "fraud_recall": 0.7755102040816326,
+    "fraud_precision": 1.0,
+    "true_negatives": 28425,
+    "false_positives": 7,
+    "false_negatives": 11,
+    "true_positives": 38,
+    "false_positive_rate": 0.0002462014631401238
+  },
+  "test": {
+    "roc_auc": 0.9789509413078681,
+    "pr_auc": 0.8755053897003426,
+    "accuracy": 0.9993328885923949,
+    "fraud_recall": 0.8571428571428571,
+    "fraud_precision": 1.0,
+    "true_negatives": 56840,
+    "false_positives": 24,
+    "false_negatives": 14,
+    "true_positives": 84,
+    "false_positive_rate": 0.0004220596510973551
+  },
+  "params": {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "learning_rate": 0.1,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "scale_pos_weight": 2.0000100493422703,
+    "random_state": 42,
+    "eval_metric": "aucpr",
+    "use_label_encoder": false,
+    "verbosity": 0,
+    "min_child_weight": 1,
+    "gamma": 0
+  },
+  "run_id": "8eb9b67784044f03827abb09aa6564dd"
+}

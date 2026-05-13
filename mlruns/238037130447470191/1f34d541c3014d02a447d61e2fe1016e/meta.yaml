@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bijal/project1/mlruns/238037130447470191/1f34d541c3014d02a447d61e2fe1016e/artifacts
+end_time: 1778584473558
+entry_point_name: ''
+experiment_id: '238037130447470191'
+lifecycle_stage: active
+run_id: 1f34d541c3014d02a447d61e2fe1016e
+run_name: LightGBM_lr0.01_leaves15
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778584465210
+status: 4
+tags: []
+user_id: bijal

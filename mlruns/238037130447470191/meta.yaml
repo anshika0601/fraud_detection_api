@@ -1,0 +1,8 @@
+artifact_location: file:///C:/Users/bijal/project1/mlruns/238037130447470191
+creation_time: 1778583540598
+experiment_id: '238037130447470191'
+last_update_time: 1778583540598
+lifecycle_stage: active
+name: fraud_detection_lightgbm_tuning
+trace_location: null
+workspace: default

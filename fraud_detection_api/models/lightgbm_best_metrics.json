@@ -1,0 +1,61 @@
+{
+  "best_params": {
+    "learning_rate": 0.2,
+    "num_leaves": 15
+  },
+  "best_run_id": "a2ff81c9250e4bcf872edefe56755e9a",
+  "test_metrics": {
+    "roc_auc": 0.9765336090119785,
+    "pr_auc": 0.8050379527452892,
+    "accuracy": 0.9981917769741231,
+    "fraud_recall": 0.8571428571428571,
+    "fraud_precision": 1.0,
+    "true_negatives": 56775,
+    "false_positives": 89,
+    "false_negatives": 14,
+    "true_positives": 84,
+    "false_positive_rate": 0.0015651378728193585
+  },
+  "top_features": [
+    {
+      "feature": "V14",
+      "importance": 76
+    },
+    {
+      "feature": "V4",
+      "importance": 63
+    },
+    {
+      "feature": "V12",
+      "importance": 49
+    },
+    {
+      "feature": "V10",
+      "importance": 44
+    },
+    {
+      "feature": "V17",
+      "importance": 42
+    },
+    {
+      "feature": "V8",
+      "importance": 41
+    },
+    {
+      "feature": "V11",
+      "importance": 39
+    },
+    {
+      "feature": "Amount",
+      "importance": 37
+    },
+    {
+      "feature": "__row_id",
+      "importance": 36
+    },
+    {
+      "feature": "V26",
+      "importance": 35
+    }
+  ]
+}

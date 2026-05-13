@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Data artifacts (large files)
+fraud_detection_api/data/*.csv
+fraud_detection_api/data/*.pkl
+fraud_detection_api/models/*.pkl
+
+# Reports / intermediate outputs
+fraud_detection_api/data/*.json
+fraud_detection_api/data/*.png
+
+# IDE
+.vscode/
+*.iml
+
+# pytest
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+

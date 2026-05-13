@@ -1,0 +1,10 @@
+artifact_location: file:///C:/Users/bijal/project1/mlruns/344323733246250083/models/m-8c2e340ef3ea4d3199afb1c7b89d451d/artifacts
+creation_timestamp: 1778684074558
+experiment_id: '344323733246250083'
+last_updated_timestamp: 1778684088745
+model_id: m-8c2e340ef3ea4d3199afb1c7b89d451d
+model_type: null
+name: random_forest_model
+source_run_id: d8ae6a4941da4ca6aaf814cf477a770e
+status: 2
+status_message: null

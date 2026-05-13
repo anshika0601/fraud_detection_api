@@ -1,0 +1,10 @@
+artifact_location: file:///C:/Users/bijal/project1/fraud_detection_api/mlruns/308663023377989025/models/m-987fec2251e54e858c6efecf53c27b1e/artifacts
+creation_timestamp: 1778679877846
+experiment_id: '308663023377989025'
+last_updated_timestamp: 1778679888424
+model_id: m-987fec2251e54e858c6efecf53c27b1e
+model_type: null
+name: lightgbm_model_lr0_1_leaves63
+source_run_id: 7913a92e95d44e84bd14626fbb4ac819
+status: 2
+status_message: null

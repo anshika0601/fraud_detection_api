@@ -1,0 +1,8 @@
+artifact_location: file:///C:/Users/bijal/project1/mlruns/167805826833239774
+creation_time: 1778683116974
+experiment_id: '167805826833239774'
+last_update_time: 1778683116974
+lifecycle_stage: active
+name: fraud_detection__logistic_reg
+trace_location: null
+workspace: default
