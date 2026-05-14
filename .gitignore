@@ -24,6 +24,11 @@ fraud_detection_api/data/*.png
 # pytest
 .pytest_cache/
 
+# MLflow
+mlruns/
+.mlflow/
+mlflow_compare.png
+
 # OS
 .DS_Store
 Thumbs.db
