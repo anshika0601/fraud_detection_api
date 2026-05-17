@@ -1,132 +1,132 @@
 """
-Training script for Fraud Detection using Random Forest and MLflow.
-Logs parameters, metrics, and the model artifact.
+Fast Random Forest training for Fraud Detection with MLflow tracking.
+
 """
 
 import pandas as pd
 import numpy as np
 import os
+import json
+import matplotlib.pyplot as plt
 import mlflow
 import mlflow.sklearn
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import precision_score, recall_score, roc_auc_score, f1_score, confusion_matrix
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    confusion_matrix,
+    classification_report,
+)
 import joblib
 import logging
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Paths
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 DATA_DIR = os.path.join(PROJECT_DIR, 'data')
 MODELS_DIR = os.path.join(PROJECT_DIR, 'models')
+os.makedirs(MODELS_DIR, exist_ok=True)
 
-def _ensure_preprocessed_csvs() -> None:
-    """Ensure data/X_{split}.csv and data/y_{split}.csv exist.
-
-    If missing, run preprocess_data.py from the project root.
-    """
-    required = [
-        os.path.join(DATA_DIR, 'X_train.csv'),
-        os.path.join(DATA_DIR, 'X_val.csv'),
-        os.path.join(DATA_DIR, 'y_train.csv'),
-        os.path.join(DATA_DIR, 'y_val.csv'),
-     
-    ]
-
-    missing = [p for p in required if not os.path.exists(p)]
-    if not missing:
-        return
-
-    print(f"⚠️ Missing preprocessed CSVs ({len(missing)}). Running preprocessing...")
-
-    preprocess_script = os.path.join(PROJECT_DIR, 'preprocess_data.py')
-    if not os.path.exists(preprocess_script):
-        raise FileNotFoundError(f"Preprocess script not found: {preprocess_script}")
-
-    import sys
-    import subprocess
-
-    subprocess.check_call([sys.executable, preprocess_script], cwd=PROJECT_DIR)
-
-
-#mlflow tracking setup
+# MLflow setup
 mlflow.set_tracking_uri("file:./mlruns")
 mlflow.set_experiment("fraud_detection_random_forest")
 
 
 def load_data():
-    """Load preprocessed data"""
-    print("\n📂 Loading preprocessed data...")
-    
+    """Load preprocessed data (train/val/test)."""
     X_train = pd.read_csv(os.path.join(DATA_DIR, 'X_train.csv'))
     X_val = pd.read_csv(os.path.join(DATA_DIR, 'X_val.csv'))
+    X_test = pd.read_csv(os.path.join(DATA_DIR, 'X_test.csv'))
     y_train = pd.read_csv(os.path.join(DATA_DIR, 'y_train.csv')).squeeze()
     y_val = pd.read_csv(os.path.join(DATA_DIR, 'y_val.csv')).squeeze()
-
-    
-    print(f"✅ Train: {X_train.shape} (fraud: {y_train.mean():.4%})")
-    print(f"✅ Validation: {X_val.shape} (fraud: {y_val.mean():.4%})")
-    
-    return X_train, X_val, y_train, y_val
+    y_test = pd.read_csv(os.path.join(DATA_DIR, 'y_test.csv')).squeeze()
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 def train():
-    # Set experiment name
-    mlflow.set_experiment("Fraud_Detection")
-    
-    # Define parameters
-    n_estimators = 100
-    max_depth = 10
-    random_state = 42
-    
-    X_train, X_val, y_train, y_val = load_data()
-    
-    with mlflow.start_run():
-        logger.info(f"Starting MLflow run with n_estimators={n_estimators}, max_depth={max_depth}")
-        
-        # Log parameters
-        mlflow.log_param("n_estimators", n_estimators)
-        mlflow.log_param("max_depth", max_depth)
-        mlflow.log_param("random_state", random_state)
-        
-        # Initialize and train model
-        rf = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            random_state=random_state,
-            n_jobs=-1
-        )
-        
-        logger.info("Training Random Forest model...")
+    X_train, X_val, X_test, y_train, y_val, y_test = load_data()
+
+    # Fast parameters
+    params = {
+        "n_estimators": 50,           # fewer trees
+        "max_depth": 10,              # shallower trees
+        "min_samples_split": 10,      # prevents deep splits
+        "min_samples_leaf": 4,
+        "class_weight": "balanced",
+        "random_state": 42,
+        "n_jobs": -1,                 # use all CPU cores
+        "max_features": "sqrt",
+    }
+
+    with mlflow.start_run(run_name="Random_Forest_Fast"):
+        mlflow.log_params(params)
+        logger.info("Training Random Forest ...")
+
+        rf = RandomForestClassifier(**params)
         rf.fit(X_train, y_train)
-        
-        # Predictions
-        logger.info("Evaluating model...")
-        y_pred = rf.predict(X_val)
-        y_prob = rf.predict_proba(X_val)[:, 1]
-        
-        # Calculate metrics
-        precision = precision_score(y_val, y_pred)
-        recall = recall_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred)
-        auc_roc = roc_auc_score(y_val, y_prob)
-        
-        # Log metrics
-        mlflow.log_metric("precision", precision)
-        mlflow.log_metric("recall", recall)
-        mlflow.log_metric("f1_score", f1)
-        mlflow.log_metric("auc_roc", auc_roc)
-        
-        logger.info(f"Metrics: Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}, AUC={auc_roc:.4f}")
-        
-        # Log model
+
+        # Validation predictions
+        y_prob_val = rf.predict_proba(X_val)[:, 1]
+        y_pred_val = rf.predict(X_val)
+
+        # Metrics
+        roc_auc = roc_auc_score(y_val, y_prob_val)
+        pr_auc = average_precision_score(y_val, y_prob_val)
+        tn, fp, fn, tp = confusion_matrix(y_val, y_pred_val).ravel()
+        fraud_recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
+
+        mlflow.log_metric("val_roc_auc", roc_auc)
+        mlflow.log_metric("val_pr_auc", pr_auc)
+        mlflow.log_metric("val_fraud_recall", fraud_recall)
+        mlflow.log_metric("val_false_positive_rate", fpr)
+
+        print(f"✅ Validation PR-AUC: {pr_auc:.4f}, Fraud Recall: {fraud_recall:.2%}, FPR: {fpr:.4%}")
+
+        # Test evaluation
+        y_prob_test = rf.predict_proba(X_test)[:, 1]
+        test_roc = roc_auc_score(y_test, y_prob_test)
+        test_pr = average_precision_score(y_test, y_prob_test)
+        mlflow.log_metric("test_roc_auc", test_roc)
+        mlflow.log_metric("test_pr_auc", test_pr)
+        print(f"✅ Test PR-AUC: {test_pr:.4f}")
+
+        # Quick confusion matrix plot (optional – skip to save time)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        cm = confusion_matrix(y_val, y_pred_val)
+        ax.matshow(cm, cmap='Blues', alpha=0.7)
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, str(cm[i, j]), ha='center', va='center')
+        ax.set_xticklabels(['', 'Legit', 'Fraud'])
+        ax.set_yticklabels(['', 'Legit', 'Fraud'])
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('Actual')
+        ax.set_title('Confusion Matrix')
+        plt.tight_layout()
+        cm_path = os.path.join(DATA_DIR, 'rf_cm_fast.png')
+        plt.savefig(cm_path, dpi=100)
+        mlflow.log_artifact(cm_path)
+        plt.close(fig)
+
+        # Save model locally
+        joblib.dump(rf, os.path.join(MODELS_DIR, 'random_forest_fast.pkl'))
         mlflow.sklearn.log_model(rf, "random_forest_model")
-        
-        # Save model locally as well (optional)
-        os.makedirs('models', exist_ok=True)
-        joblib.dump(rf, 'models/random_forest_fraud_model.pkl')
-        logger.info("Model saved to models/random_forest_fraud_model.pkl and MLflow artifacts")
+
+        # Save metrics
+        with open(os.path.join(MODELS_DIR, 'random_forest_fast_metrics.json'), 'w') as f:
+            json.dump({
+                "params": params,
+                "val_pr_auc": pr_auc,
+                "test_pr_auc": test_pr,
+                "fraud_recall": fraud_recall,
+                "fpr": fpr
+            }, f, indent=2)
+
+      
+
 
 if __name__ == "__main__":
     train()

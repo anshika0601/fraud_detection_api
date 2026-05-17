@@ -1,0 +1,14 @@
+{
+  "model": "Logistic Regression",
+  "roc_auc": 0.936480022509848,
+  "pr_auc": 0.6344196304497149,
+  "accuracy": 0.985604438046417,
+  "fraud_catch_rate": 0.7959183673469388,
+  "false_alarm_rate": 0.014068655036578503,
+  "confusion_matrix": {
+    "true_negatives": 28032,
+    "false_positives": 400,
+    "false_negatives": 10,
+    "true_positives": 39
+  }
+}
