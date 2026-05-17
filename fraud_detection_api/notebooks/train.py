@@ -100,8 +100,11 @@ def train():
         for i in range(2):
             for j in range(2):
                 ax.text(j, i, str(cm[i, j]), ha='center', va='center')
-        ax.set_xticklabels(['', 'Legit', 'Fraud'])
-        ax.set_yticklabels(['', 'Legit', 'Fraud'])
+        # Fix matplotlib warning: set labels only after defining fixed ticks
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(['Legit', 'Fraud'])
+        ax.set_yticklabels(['Legit', 'Fraud'])
         ax.set_xlabel('Predicted')
         ax.set_ylabel('Actual')
         ax.set_title('Confusion Matrix')

@@ -24,7 +24,7 @@ def main():
     
     # Load data
     logger.info("Loading data...")
-    df = pd.read_csv('data/creditcard.csv')
+    df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'creditcard.csv'))
     print(f"✅ Loaded {len(df):,} transactions")
     
     # Configure preprocessing

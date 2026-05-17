@@ -33,7 +33,7 @@ def main() -> None:
     plt.style.use("seaborn-v0_8-darkgrid")
     sns.set_palette("Set2")
 
-    print("✅ Imports loaded")
+    print("[OK] Imports loaded")
     print(f"Pandas version: {pd.__version__}")
 
     # Load preprocessed data (robust paths independent of current working directory)
@@ -69,6 +69,7 @@ def main() -> None:
     # mlflow tracking setup
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment("fraud_detection__logistic_reg")
+    mlflow.start_run()
 
     print("=" * 60)
     print("DATA LOADED SUCCESSFULLY")
@@ -94,8 +95,18 @@ def main() -> None:
         solver="liblinear",  # Works well for smaller datasets
     )
 
+    # Log hyperparameters
+    mlflow.log_params({
+        "model": "LogisticRegression",
+        "class_weight": "balanced",
+        "random_state": 42,
+        "max_iter": 1000,
+        "C": 1.0,
+        "solver": "liblinear",
+    })
+
     baseline_model.fit(X_train, y_train)
-    print("✅ Model training complete")
+    print("[OK] Model training complete")
 
     # Get predictions
     y_pred_proba = baseline_model.predict_proba(X_val)[:, 1]
@@ -111,6 +122,13 @@ def main() -> None:
     print(f"ROC-AUC Score: {roc_auc:.4f}")
     print(f"PR-AUC Score: {pr_auc:.4f}")
     print(f"Accuracy: {baseline_model.score(X_val, y_val):.4f}")
+
+    # Log validation metrics
+    mlflow.log_metrics({
+        "val_roc_auc": roc_auc,
+        "val_pr_auc": pr_auc,
+        "val_accuracy": baseline_model.score(X_val, y_val),
+    })
 
     print("\nClassification Report:")
     print(
@@ -164,7 +182,7 @@ def main() -> None:
     plt.show()
 
 
-    print("\n📌 Confusion Matrix Details:")
+    print("\n[INFO] Confusion Matrix Details:")
     print(f"   • True Negatives (Correct legit): {tn:,}")
     print(f"   • False Positives (Wrong fraud): {fp:,}")
     print(f"   • False Negatives (Missed fraud): {fn:,}")
@@ -174,9 +192,15 @@ def main() -> None:
     fraud_catch_rate = tp / (tp + fn) if (tp + fn) > 0 else 0
     false_alarm_rate = fp / (fp + tn) if (fp + tn) > 0 else 0
 
-    print("\n📡 Business Metrics:")
+    print("\n[METRICS] Business Metrics:")
     print(f"   • Fraud Detection Rate (Recall): {fraud_catch_rate:.2%}")
     print(f"   • False Alarm Rate: {false_alarm_rate:.4%}")
+
+    # Log business metrics
+    mlflow.log_metrics({
+        "fraud_catch_rate": fraud_catch_rate,
+        "false_alarm_rate": false_alarm_rate,
+    })
 
     # ROC Curve and PR Curve
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -283,13 +307,13 @@ def main() -> None:
     plt.close(fig)
     plt.show()
 
-    print("\n📈 Top 5 Features Increasing Fraud Risk:")
+    print("\n[UP] Top 5 Features Increasing Fraud Risk:")
     print(
         feature_importance[feature_importance["coefficient"] > 0]
         .head(5)[["feature", "coefficient"]]
     )
 
-    print("\n📉 Top 5 Features Decreasing Fraud Risk:")
+    print("\n[DOWN] Top 5 Features Decreasing Fraud Risk:")
     print(
         feature_importance[feature_importance["coefficient"] < 0]
         .head(5)[["feature", "coefficient"]]
@@ -297,8 +321,17 @@ def main() -> None:
 
     # Save the model
     os.makedirs("../models", exist_ok=True)
-    joblib.dump(baseline_model, "../models/baseline_logistic_regression.pkl")
-    print("✅ Baseline model saved to: models/baseline_logistic_regression.pkl")
+    model_path = "../models/baseline_logistic_regression.pkl"
+    joblib.dump(baseline_model, model_path)
+    print("[OK] Baseline model saved to: models/baseline_logistic_regression.pkl")
+
+    # Log model as artifact
+    mlflow.log_artifact(model_path)
+
+    # Log visualizations as artifacts
+    mlflow.log_artifact(os.path.join(data_dir, "baseline_confusion_matrix.png"))
+    mlflow.log_artifact(os.path.join(data_dir, "baseline_performance_curves.png"))
+    mlflow.log_artifact(os.path.join(data_dir, "baseline_feature_importance.png"))
 
     # Save metrics to JSON for later comparison
     baseline_metrics = {
@@ -319,7 +352,7 @@ def main() -> None:
     with open("../models/baseline_metrics.json", "w") as f:
         json.dump(baseline_metrics, f, indent=2)
 
-    print("✅ Metrics saved to: models/baseline_metrics.json")
+    print("[OK] Metrics saved to: models/baseline_metrics.json")
 
     # Test set evaluation (final check)
     print("=" * 60)
@@ -336,6 +369,17 @@ def main() -> None:
     print(f"Test ROC-AUC: {test_roc_auc:.4f}")
     print(f"Test PR-AUC: {test_pr_auc:.4f}")
     print(f"Test Accuracy: {test_accuracy:.4f}")
+
+    # Log test metrics
+    mlflow.log_metrics({
+        "test_roc_auc": test_roc_auc,
+        "test_pr_auc": test_pr_auc,
+        "test_accuracy": test_accuracy,
+    })
+
+    # End MLflow run
+    mlflow.end_run()
+    print("\n[OK] MLflow run logged successfully!")
 
 
 if __name__ == "__main__":

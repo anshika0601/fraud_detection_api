@@ -1,0 +1,40 @@
+{
+  "original_data": {
+    "n_samples": 5000,
+    "n_features": 11,
+    "fraud_rate": 0.002,
+    "n_fraud": 10,
+    "n_legit": 4990
+  },
+  "processed_data": {
+    "train": {
+      "n_samples": 5239,
+      "n_features": 11
+    },
+    "val": {
+      "n_samples": 500,
+      "n_features": 11
+    },
+    "test": {
+      "n_samples": 1000,
+      "n_features": 11
+    }
+  },
+  "config": {
+    "test_size": 0.2,
+    "val_size": 0.1,
+    "random_state": 42,
+    "smote_sampling_strategy": 0.5,
+    "smote_k_neighbors": 5,
+    "scale_features": [
+      "Amount",
+      "Time"
+    ],
+    "target_column": "Class"
+  },
+  "preprocessing_steps": [
+    "Split data into train/val/test (stratified)",
+    "Scaled features: ['Amount', 'Time']",
+    "Applied SMOTE with sampling_strategy=0.5"
+  ]
+}
