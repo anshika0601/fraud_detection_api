@@ -12,6 +12,7 @@ venv/
 fraud_detection_api/data/*.csv
 fraud_detection_api/data/*.pkl
 fraud_detection_api/models/*.pkl
+!fraud_detection_api/models/fraud_detector_v1.pkl
 
 # Reports / intermediate outputs
 fraud_detection_api/data/*.json
