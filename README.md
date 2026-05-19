@@ -10,4 +10,5 @@ This repository contains the LightGBM fraud detection training pipeline with Opt
 
 ## Notes
 - Run `mlflow ui` from the repository root and open `http://localhost:5000` to inspect runs.
-- The training script is `fraud_detection_api/notebooks/train_lightGBM.py`.
+- LightGBM training script: `fraud_detection_api/notebooks/train_lightGBM.py`.
+- XGBoost Optuna tuning script: `fraud_detection_api/notebooks/train_xgboost_optuna.py`.
