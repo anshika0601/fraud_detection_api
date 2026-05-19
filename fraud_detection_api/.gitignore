@@ -9,6 +9,7 @@ data/y_*.csv
 # Preprocessor + reports (optional)
 models/*.pkl
 !models/fraud_detector_v1.pkl
+!models/fraud_detector_xgb_v1.pkl
 data/*.json
 
 data/*.png

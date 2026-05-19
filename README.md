@@ -3,8 +3,10 @@
 This repository contains the LightGBM fraud detection training pipeline with Optuna hyperparameter tuning and MLflow experiment tracking.
 
 ## Final Model
-- Saved final model: `fraud_detection_api/models/fraud_detector_v1.pkl`
-- Final test ROC-AUC: `0.9755`
+- Saved final LightGBM model: `fraud_detection_api/models/fraud_detector_v1.pkl`
+- Saved final XGBoost model: `fraud_detection_api/models/fraud_detector_xgb_v1.pkl`
+- Final XGBoost test ROC-AUC: `0.9832`
+- Final XGBoost test PR-AUC: `0.8694`
 - MLflow registered model name: `fraud-detector-v1`
 - Registered model version: `1`
 
