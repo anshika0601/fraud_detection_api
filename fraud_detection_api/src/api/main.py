@@ -4,13 +4,13 @@ Loads the best model (XGBoost/LightGBM) and serves real-time predictions.
 """
 
 import os
-import pickle
+import time
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import joblib
 import logging
 from datetime import datetime
@@ -30,7 +30,6 @@ MODEL_PATH = os.getenv(
     "MODEL_PATH",
     os.path.join(BASE_DIR, "models", "fraud_detector_xgb_v1.pkl")
 )
-# Fallback to the trained XGBoost artifact or legacy model if the preferred model is unavailable
 FALLBACK_MODEL_PATH = os.getenv(
     "FALLBACK_MODEL_PATH",
     os.path.join(BASE_DIR, "models", "fraud_detector_v1.pkl")
@@ -38,45 +37,70 @@ FALLBACK_MODEL_PATH = os.getenv(
 LEGACY_LIGHTGBM_MODEL_PATH = os.path.join(BASE_DIR, "models", "lightgbm_best_model.pkl")
 
 # ----------------------------------------------------------------------
-# Pydantic schemas (request/response validation)
+# Pydantic schemas with enhanced constraints
 # ----------------------------------------------------------------------
-class Transaction(BaseModel):
-    """Single transaction features (exactly 30 features: V1-V28 + Amount + Time)"""
-    Time: float
-    V1: float
-    V2: float
-    V3: float
-    V4: float
-    V5: float
-    V6: float
-    V7: float
-    V8: float
-    V9: float
-    V10: float
-    V11: float
-    V12: float
-    V13: float
-    V14: float
-    V15: float
-    V16: float
-    V17: float
-    V18: float
-    V19: float
-    V20: float
-    V21: float
-    V22: float
-    V23: float
-    V24: float
-    V25: float
-    V26: float
-    V27: float
-    V28: float
-    Amount: float
+class TransactionInput(BaseModel):
+    """
+    Single transaction features – all 30 features expected by the model.
+    Constraints:
+        - Time >= 0 (seconds since first transaction)
+        - Amount > 0 (dollar amount)
+        - V1..V28: any float, but with reasonable outliers warning.
+    """
+    Time: float = Field(..., ge=0, description="Seconds elapsed from first transaction")
+    V1: float = Field(..., description="PCA component 1")
+    V2: float = Field(..., description="PCA component 2")
+    V3: float = Field(..., description="PCA component 3")
+    V4: float = Field(..., description="PCA component 4")
+    V5: float = Field(..., description="PCA component 5")
+    V6: float = Field(..., description="PCA component 6")
+    V7: float = Field(..., description="PCA component 7")
+    V8: float = Field(..., description="PCA component 8")
+    V9: float = Field(..., description="PCA component 9")
+    V10: float = Field(..., description="PCA component 10")
+    V11: float = Field(..., description="PCA component 11")
+    V12: float = Field(..., description="PCA component 12")
+    V13: float = Field(..., description="PCA component 13")
+    V14: float = Field(..., description="PCA component 14")
+    V15: float = Field(..., description="PCA component 15")
+    V16: float = Field(..., description="PCA component 16")
+    V17: float = Field(..., description="PCA component 17")
+    V18: float = Field(..., description="PCA component 18")
+    V19: float = Field(..., description="PCA component 19")
+    V20: float = Field(..., description="PCA component 20")
+    V21: float = Field(..., description="PCA component 21")
+    V22: float = Field(..., description="PCA component 22")
+    V23: float = Field(..., description="PCA component 23")
+    V24: float = Field(..., description="PCA component 24")
+    V25: float = Field(..., description="PCA component 25")
+    V26: float = Field(..., description="PCA component 26")
+    V27: float = Field(..., description="PCA component 27")
+    V28: float = Field(..., description="PCA component 28")
+    Amount: float = Field(..., gt=0, description="Transaction amount in USD")
+
+    @validator('Time')
+    def time_non_negative(cls, v):
+        if v < 0:
+            raise ValueError('Time must be >= 0')
+        return v
 
     @validator('Amount')
     def amount_positive(cls, v):
-        if v < 0:
-            raise ValueError('Amount must be non-negative')
+        if v <= 0:
+            raise ValueError('Amount must be > 0')
+        return v
+
+    # Optional: warn if any V feature is extremely out of range (beyond typical PCA values)
+    # Not raising error, just logging warning (can be changed to error if needed)
+    @validator('V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
+               'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19',
+               'V20', 'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28')
+    def check_v_outliers(cls, v, field):
+        # Typical PCA values in fraud dataset are roughly between -5 and 5.
+        # Values beyond +/-10 are rare and might indicate data issues.
+        if abs(v) > 10:
+            logger.warning(f"{field.name} value {v} is unusually large (|value| > 10). "
+                           "This may affect prediction quality.")
         return v
 
     class Config:
@@ -118,7 +142,7 @@ class Transaction(BaseModel):
 
 class PredictionRequest(BaseModel):
     """Request can contain one or multiple transactions."""
-    transactions: List[Transaction]
+    transactions: List[TransactionInput]
 
     @validator('transactions')
     def not_empty(cls, v):
@@ -128,19 +152,19 @@ class PredictionRequest(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    """Prediction response for a batch of transactions."""
-    predictions: List[int]          # 0 = legitimate, 1 = fraud
-    probabilities: List[float]      # fraud probability (0-1)
-    latency_ms: float               # inference time in milliseconds
-    model_version: str              # which model was used
-    timestamp: str                  # ISO format timestamp
+    predictions: List[int]
+    probabilities: List[float]
+    latency_ms: float
+    model_version: str
+    timestamp: str
 
 
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
+    model_version: str
     model_path: str
-    version: str
+    uptime_seconds: float
 
 
 # ----------------------------------------------------------------------
@@ -154,24 +178,23 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Enable CORS (adjust origins for production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ----------------------------------------------------------------------
-# Model loading (once at startup)
+# Global variables
 # ----------------------------------------------------------------------
 model = None
 model_version = None
 loaded_model_path = None
+startup_time = None
 
 def load_model():
-    """Load the best available model."""
     global model, model_version, loaded_model_path
     try:
         if os.path.exists(MODEL_PATH):
@@ -188,9 +211,9 @@ def load_model():
             loaded_model_path = LEGACY_LIGHTGBM_MODEL_PATH
             model = joblib.load(LEGACY_LIGHTGBM_MODEL_PATH)
             model_version = "lightgbm_best_v1"
-            logger.info(f"Loaded LightGBM fallback model from {LEGACY_LIGHTGBM_MODEL_PATH}")
+            logger.info(f"Loaded LightGBM model from {LEGACY_LIGHTGBM_MODEL_PATH}")
         else:
-            logger.error("No model found. Please train a model first.")
+            logger.error("No model found.")
             model = None
             model_version = "none"
             loaded_model_path = None
@@ -201,78 +224,59 @@ def load_model():
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model when API starts."""
+    global startup_time
+    startup_time = time.time()
     load_model()
-    logger.info("Fraud Detection API started")
+    logger.info(f"Fraud Detection API started at {datetime.utcnow().isoformat()}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Fraud Detection API shutting down")
 
 # ----------------------------------------------------------------------
-# Helper: convert transaction list to DataFrame
+# Helper: convert list of TransactionInput to DataFrame
 # ----------------------------------------------------------------------
-def transactions_to_df(transactions: List[Transaction]) -> pd.DataFrame:
-    """Convert list of Transaction objects to DataFrame with correct column order."""
+def transactions_to_df(transactions: List[TransactionInput]) -> pd.DataFrame:
     records = [t.dict() for t in transactions]
     df = pd.DataFrame(records)
-    # Ensure correct column order (matching training)
     expected_order = [
         'Time', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9',
         'V10', 'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19',
         'V20', 'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28', 'Amount'
     ]
-    # Reindex, fill missing with 0 (should not happen)
     df = df.reindex(columns=expected_order, fill_value=0.0)
     return df
 
 # ----------------------------------------------------------------------
-# Health endpoint
+# Endpoints
 # ----------------------------------------------------------------------
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
-    """Check if API and model are ready."""
     resolved_path = loaded_model_path
     if resolved_path is None:
         resolved_path = MODEL_PATH if os.path.exists(MODEL_PATH) else FALLBACK_MODEL_PATH
+    uptime = time.time() - startup_time if startup_time is not None else 0.0
     return HealthResponse(
         status="healthy" if model is not None else "degraded",
         model_loaded=model is not None,
+        model_version=model_version or "unknown",
         model_path=resolved_path,
-        version=model_version or "unknown"
+        uptime_seconds=round(uptime, 2)
     )
 
-# ----------------------------------------------------------------------
-# Prediction endpoint
-# ----------------------------------------------------------------------
 @app.post("/predict", response_model=PredictionResponse, tags=["Inference"])
 async def predict(request: PredictionRequest):
-    """
-    Predict fraud for a batch of transactions.
-
-    - **transactions**: List of 30 features (Time, V1-V28, Amount)
-    
-    Returns fraud predictions (0/1), probabilities, latency, and model info.
-    """
     if model is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model not loaded. Please contact administrator."
+            detail="Model not loaded."
         )
-    
-    import time
     start_time = time.time()
-    
     try:
-        # Convert to DataFrame
         df = transactions_to_df(request.transactions)
-        
-        # Predict probabilities
         probabilities = model.predict_proba(df)[:, 1].tolist()
         predictions = [1 if p >= 0.5 else 0 for p in probabilities]
-        
         latency_ms = (time.time() - start_time) * 1000
-        
         return PredictionResponse(
             predictions=predictions,
             probabilities=probabilities,
@@ -287,10 +291,6 @@ async def predict(request: PredictionRequest):
             detail=f"Prediction failed: {str(e)}"
         )
 
-
-# ----------------------------------------------------------------------
-# Root endpoint
-# ----------------------------------------------------------------------
 @app.get("/", tags=["System"])
 async def root():
     return {
@@ -300,13 +300,12 @@ async def root():
         "predict": "/predict (POST)"
     }
 
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=False,  # set True for development
+        reload=False,
         log_level="info"
     )
