@@ -80,7 +80,12 @@ def load_data():
 
 
 def calculate_metrics(model, X, y, label):
-    y_prob = model.predict_proba(X)[:, 1]
+    try:
+        y_prob = model.predict_proba(X)[:, 1]
+    except Exception:
+        dmatrix = xgb.DMatrix(X)
+        y_prob = model.predict(dmatrix)
+
     y_pred = (y_prob >= 0.5).astype(int)
 
     roc_auc = roc_auc_score(y, y_prob)
@@ -147,35 +152,41 @@ def train_xgboost_optuna(n_trials: int = 20):
 
     def objective(trial):
         params = {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 300, step=50),
+            'objective': 'binary:logistic',
             'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'eta': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
             'subsample': trial.suggest_float('subsample', 0.6, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
             'gamma': trial.suggest_float('gamma', 0.0, 5.0),
             'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+            'alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
             'scale_pos_weight': scale_pos_weight,
-            'random_state': 42,
-            'use_label_encoder': False,
+            'eval_metric': 'aucpr',
             'verbosity': 0,
+            'tree_method': 'hist',
+            'nthread': -1,
+            'seed': 42,
         }
+        num_boost_round = trial.suggest_int('n_estimators', 100, 300, step=50)
 
-        model = xgb.XGBClassifier(**params)
-        model.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            eval_metric='aucpr',
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dval = xgb.DMatrix(X_val, label=y_val)
+
+        model = xgb.train(
+            params,
+            dtrain,
+            num_boost_round=num_boost_round,
+            evals=[(dval, 'validation')],
             early_stopping_rounds=30,
-            verbose=False,
+            verbose_eval=False,
         )
 
+        val_probs = model.predict(dval)
         val_metrics = calculate_metrics(model, X_val, y_val, 'Validation')
 
         with mlflow.start_run(run_name=f'XGBoost_Optuna_trial_{trial.number}') as run:
-            mlflow.log_params(params)
+            mlflow.log_params({**params, 'n_estimators': num_boost_round})
             mlflow.log_metric('val_roc_auc', val_metrics['roc_auc'])
             mlflow.log_metric('val_pr_auc', val_metrics['pr_auc'])
             mlflow.log_metric('val_fraud_recall', val_metrics['fraud_recall'])
@@ -194,20 +205,34 @@ def train_xgboost_optuna(n_trials: int = 20):
     print(f"   Best params: {best_params}")
 
     final_params = {
-        **best_params,
+        'objective': 'binary:logistic',
+        'max_depth': best_params['max_depth'],
+        'eta': best_params['learning_rate'],
+        'subsample': best_params['subsample'],
+        'colsample_bytree': best_params['colsample_bytree'],
+        'gamma': best_params['gamma'],
+        'min_child_weight': best_params['min_child_weight'],
+        'alpha': best_params['reg_alpha'],
+        'lambda': best_params['reg_lambda'],
         'scale_pos_weight': scale_pos_weight,
-        'random_state': 42,
-        'use_label_encoder': False,
+        'eval_metric': 'aucpr',
         'verbosity': 0,
+        'tree_method': 'hist',
+        'nthread': -1,
+        'seed': 42,
     }
-    final_model = xgb.XGBClassifier(**final_params)
-    final_model.fit(
-        pd.concat([X_train, X_val], axis=0),
-        pd.concat([y_train, y_val], axis=0),
-        eval_set=[(X_test, y_test)],
-        eval_metric='aucpr',
+    num_boost_round = best_params['n_estimators']
+
+    dtrain_full = xgb.DMatrix(pd.concat([X_train, X_val], axis=0), label=pd.concat([y_train, y_val], axis=0))
+    dtest = xgb.DMatrix(X_test, label=y_test)
+
+    final_model = xgb.train(
+        final_params,
+        dtrain_full,
+        num_boost_round=num_boost_round,
+        evals=[(dtest, 'test')],
         early_stopping_rounds=30,
-        verbose=False,
+        verbose_eval=False,
     )
 
     test_metrics = calculate_metrics(final_model, X_test, y_test, 'Test')

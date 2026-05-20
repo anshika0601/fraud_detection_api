@@ -11,12 +11,13 @@ import numpy as np
 import mlflow
 import mlflow.lightgbm
 import lightgbm as lgb
+import optuna
+from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import json
 import os
-import itertools
 from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
@@ -34,6 +35,12 @@ warnings.filterwarnings('ignore')
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 DATA_DIR = os.path.join(PROJECT_DIR, 'data')
 MODELS_DIR = os.path.join(PROJECT_DIR, 'models')
+MLFLOW_TRACKING_URI = Path(os.path.join(PROJECT_DIR, 'mlruns')).absolute().as_uri()
+MODEL_REGISTRY_NAME = 'fraud-detector-v1'
+
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+mlflow.set_registry_uri(MLFLOW_TRACKING_URI)
+mlflow.set_experiment('fraud_detection_lightgbm_tuning')
 
 
 def _ensure_preprocessed_csvs() -> None:
@@ -65,10 +72,6 @@ def _ensure_preprocessed_csvs() -> None:
 
     subprocess.check_call([sys.executable, preprocess_script], cwd=PROJECT_DIR)
 
-
-# Set MLflow tracking
-mlflow.set_tracking_uri("file:./mlruns")
-mlflow.set_experiment("fraud_detection_lightgbm_tuning")
 
 print("="*60)
 print("LIGHTGBM HYPERPARAMETER TUNING WITH MLFLOW")
@@ -139,6 +142,7 @@ def plot_feature_importance(model, feature_names, learning_rate, num_leaves, sav
     ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis='x')
     
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -197,8 +201,8 @@ def sanitize_mlflow_model_name(name: str) -> str:
     return safe or 'lightgbm_model'
 
 
-def tune_lightgbm():
-    """Hyperparameter tuning for LightGBM"""
+def tune_lightgbm(n_trials: int = 20):
+    """Hyperparameter tuning for LightGBM using Optuna."""
     
     # Load data
     X_train, X_val, X_test, y_train, y_val, y_test = load_data()
@@ -207,14 +211,9 @@ def tune_lightgbm():
     ratio = len(y_train[y_train==0]) / len(y_train[y_train==1])
     print(f"\n⚖️ Class imbalance ratio: {ratio:.1f}:1")
     
-    # Define hyperparameter grid
-    learning_rates = [0.01, 0.05, 0.1, 0.2, 0.3]
-    num_leaves_options = [15, 31, 63, 127, 255]
-    
-    # Fixed parameters (same for all runs)
     fixed_params = {
-        'n_estimators': 300,
-        'max_depth': -1,  # Unlimited, let num_leaves control complexity
+        'n_estimators': 100,
+        'max_depth': -1,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'reg_alpha': 0.01,
@@ -223,136 +222,108 @@ def tune_lightgbm():
         'scale_pos_weight': ratio,
         'random_state': 42,
         'verbose': -1,
-        'force_row_wise': True  # Faster training
+        'force_row_wise': True,
+        'n_jobs': -1
     }
     
-    # Store all results
+    trial_run_ids = {}
+    trial_results = {}
+    
+    def objective(trial):
+        lr = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
+        leaves = trial.suggest_categorical('num_leaves', [15, 31, 63, 127, 255])
+        
+        params = {
+            'learning_rate': lr,
+            'num_leaves': leaves,
+            **fixed_params
+        }
+        
+        model = lgb.LGBMClassifier(**params)
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            eval_metric='auc',
+            callbacks=[
+                lgb.early_stopping(stopping_rounds=30, verbose=False),
+                lgb.log_evaluation(0)
+            ]
+        )
+        
+        val_metrics = calculate_metrics(model, X_val, y_val, 'Validation')
+        trial_results[trial.number] = {
+            'val_roc_auc': val_metrics['roc_auc'],
+            'val_pr_auc': val_metrics['pr_auc'],
+            'val_recall': val_metrics['fraud_recall'],
+            'val_precision': val_metrics['fraud_precision'],
+            'val_fpr': val_metrics['false_positive_rate']
+        }
+        
+        run_name = f'Optuna_lr{lr}_leaves{leaves}_trial{trial.number}'
+        with mlflow.start_run(run_name=run_name) as run:
+            mlflow.log_params({'learning_rate': lr, 'num_leaves': leaves, **fixed_params})
+            mlflow.log_metric('val_roc_auc', val_metrics['roc_auc'])
+            mlflow.log_metric('val_pr_auc', val_metrics['pr_auc'])
+            mlflow.log_metric('val_recall', val_metrics['fraud_recall'])
+            mlflow.log_metric('val_precision', val_metrics['fraud_precision'])
+            mlflow.log_metric('val_false_positive_rate', val_metrics['false_positive_rate'])
+            mlflow.log_param('optuna_trial', trial.number)
+            trial_run_ids[trial.number] = run.info.run_id
+        
+        return val_metrics['roc_auc']
+    
+    print(f"\n🚀 Starting Optuna tuning for {n_trials} trials")
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials)
+    
+    best_trial = study.best_trial
+    best_params = {
+        'learning_rate': best_trial.params['learning_rate'],
+        'num_leaves': best_trial.params['num_leaves']
+    }
+    best_run_id = trial_run_ids.get(best_trial.number)
+    
+    print(f"\n✅ Optuna completed. Best trial: {best_trial.number} | val_roc_auc={best_trial.value:.4f}")
+    print(f"   Best params: {best_params}")
+    
+    # Final model training on train + validation for deployment
+    X_train_full = pd.concat([X_train, X_val], axis=0)
+    y_train_full = pd.concat([y_train, y_val], axis=0)
+    final_params = {
+        **fixed_params,
+        **best_params
+    }
+    
+    final_model = lgb.LGBMClassifier(**final_params)
+    final_model.fit(
+        X_train_full, y_train_full,
+        eval_set=[(X_test, y_test)],
+        eval_metric='auc',
+        callbacks=[
+            lgb.early_stopping(stopping_rounds=30, verbose=False),
+            lgb.log_evaluation(0)
+        ]
+    )
+    
+    test_metrics = calculate_metrics(final_model, X_test, y_test, 'Test')
+    
     all_results = []
-    best_pr_auc = 0
-    best_params = None
-    best_model = None
-    best_run_id = None
+    for trial in study.trials:
+        trial_params = trial.params
+        metric_record = trial_results.get(trial.number, {})
+        all_results.append({
+            'trial_number': trial.number,
+            'learning_rate': trial_params['learning_rate'],
+            'num_leaves': trial_params['num_leaves'],
+            'val_roc_auc': metric_record.get('val_roc_auc', trial.value),
+            'val_pr_auc': metric_record.get('val_pr_auc', np.nan),
+            'val_recall': metric_record.get('val_recall', np.nan),
+            'val_precision': metric_record.get('val_precision', np.nan),
+            'val_fpr': metric_record.get('val_fpr', np.nan),
+            'run_id': trial_run_ids.get(trial.number)
+        })
     
-    # Total combinations
-    total_combinations = len(learning_rates) * len(num_leaves_options)
-    current_run = 0
-    
-    print(f"\n🚀 Starting Hyperparameter Tuning")
-    print(f"   Learning rates: {learning_rates}")
-    print(f"   Num leaves: {num_leaves_options}")
-    print(f"   Total combinations: {total_combinations}")
-    print("="*60)
-    
-    # Grid search
-    for lr in learning_rates:
-        for leaves in num_leaves_options:
-            current_run += 1
-            
-            # Create run name
-            run_name = f"LightGBM_lr{lr}_leaves{leaves}"
-            
-            print(f"\n[{current_run}/{total_combinations}] Training: {run_name}")
-            
-            # Start MLflow run
-            with mlflow.start_run(run_name=run_name) as run:
-                
-                # Combine parameters
-                params = {
-                    'learning_rate': lr,
-                    'num_leaves': leaves,
-                    **fixed_params
-                }
-                
-                # Log parameters to MLflow
-                mlflow.log_params(params)
-                
-                # Train model
-                print(f"   Training with lr={lr}, leaves={leaves}...")
-                model = lgb.LGBMClassifier(**params)
-                
-                model.fit(
-                    X_train, y_train,
-                    eval_set=[(X_val, y_val)],
-                    eval_metric='average_precision',
-                    callbacks=[
-                        lgb.early_stopping(stopping_rounds=30, verbose=False),
-                        lgb.log_evaluation(0)  # Disable verbose output
-                    ]
-                )
-                
-                # Calculate metrics
-                train_metrics = calculate_metrics(model, X_train, y_train, "Train")
-                val_metrics = calculate_metrics(model, X_val, y_val, "Validation")
-                test_metrics = calculate_metrics(model, X_test, y_test, "Test")
-                
-                # Log metrics to MLflow
-                for metric_name, value in val_metrics.items():
-                    if isinstance(value, (int, float)):
-                        mlflow.log_metric(f"val_{metric_name}", value)
-                
-                for metric_name, value in test_metrics.items():
-                    if isinstance(value, (int, float)):
-                        mlflow.log_metric(f"test_{metric_name}", value)
-                
-                # Log best iteration
-                if hasattr(model, 'best_iteration_'):
-                    mlflow.log_metric("best_iteration", model.best_iteration_)
-                
-                # Generate and log feature importance
-                importance_df = plot_feature_importance(
-                    model, X_train.columns, lr, leaves,
-                    f'data/lgbm_importance_lr{lr}_leaves{leaves}.png'
-                )
-                mlflow.log_artifact(f'data/lgbm_importance_lr{lr}_leaves{leaves}.png')
-                
-                # Save importance CSV
-                importance_df.to_csv(f'data/lgbm_importance_lr{lr}_leaves{leaves}.csv', index=False)
-                mlflow.log_artifact(f'data/lgbm_importance_lr{lr}_leaves{leaves}.csv')
-                
-                # Generate and log performance curves
-                plot_roc_pr_curves(
-                    model, X_val, y_val, lr, leaves,
-                    f'data/lgbm_curves_lr{lr}_leaves{leaves}.png'
-                )
-                mlflow.log_artifact(f'data/lgbm_curves_lr{lr}_leaves{leaves}.png')
-                
-                # Log the model
-                safe_model_name = sanitize_mlflow_model_name(
-                    f"lightgbm_model_lr{lr}_leaves{leaves}"
-                )
-                mlflow.lightgbm.log_model(model, name=safe_model_name)
-                
-                # Save model locally
-                os.makedirs('models', exist_ok=True)
-                joblib.dump(model, f'models/lightgbm_lr{lr}_leaves{leaves}.pkl')
-                
-                # Store results
-                result = {
-                    'learning_rate': lr,
-                    'num_leaves': leaves,
-                    'val_pr_auc': val_metrics['pr_auc'],
-                    'val_roc_auc': val_metrics['roc_auc'],
-                    'val_recall': val_metrics['fraud_recall'],
-                    'val_precision': val_metrics['fraud_precision'],
-                    'val_fpr': val_metrics['false_positive_rate'],
-                    'test_pr_auc': test_metrics['pr_auc'],
-                    'test_recall': test_metrics['fraud_recall'],
-                    'best_iteration': model.best_iteration_ if hasattr(model, 'best_iteration_') else 300,
-                    'run_id': run.info.run_id
-                }
-                all_results.append(result)
-                
-                print(f"   ✅ PR-AUC: {val_metrics['pr_auc']:.4f} | Recall: {val_metrics['fraud_recall']:.2%}")
-                
-                # Track best model
-                if val_metrics['pr_auc'] > best_pr_auc:
-                    best_pr_auc = val_metrics['pr_auc']
-                    best_params = {'learning_rate': lr, 'num_leaves': leaves}
-                    best_model = model
-                    best_run_id = run.info.run_id
-                    print(f"   🏆 New best model!")
-    
-    return all_results, best_params, best_model, best_run_id, (X_train, X_val, X_test, y_train, y_val, y_test)
+    return all_results, best_params, final_model, best_run_id, (X_train, X_val, X_test, y_train, y_val, y_test, test_metrics)
 
 
 def analyze_results(all_results):
@@ -361,74 +332,78 @@ def analyze_results(all_results):
     print("TUNING RESULTS ANALYSIS")
     print("="*60)
     
-    # Convert to DataFrame
     results_df = pd.DataFrame(all_results)
-    results_df = results_df.sort_values('val_pr_auc', ascending=False)
+    if 'val_roc_auc' in results_df.columns:
+        results_df = results_df.sort_values('val_roc_auc', ascending=False)
+    else:
+        results_df = results_df.sort_values(results_df.columns[0], ascending=False)
     
     print("\n📊 Top 5 Configurations:")
-    print(results_df[['learning_rate', 'num_leaves', 'val_pr_auc', 'val_recall', 'val_fpr']].head(5).to_string(index=False))
+    cols = ['learning_rate', 'num_leaves', 'val_roc_auc', 'val_fpr']
+    print(results_df[cols].head(5).to_string(index=False))
     
     print("\n📊 Bottom 5 Configurations:")
-    print(results_df[['learning_rate', 'num_leaves', 'val_pr_auc', 'val_recall', 'val_fpr']].tail(5).to_string(index=False))
+    print(results_df[cols].tail(5).to_string(index=False))
     
-    # Create visualization
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # 1. PR-AUC heatmap
-    pivot_pr = results_df.pivot(index='learning_rate', columns='num_leaves', values='val_pr_auc')
-    sns.heatmap(pivot_pr, annot=True, fmt='.4f', cmap='YlOrRd', ax=axes[0,0])
-    axes[0,0].set_title('PR-AUC Heatmap', fontsize=14, fontweight='bold')
+    pivot_auc = results_df.pivot(index='learning_rate', columns='num_leaves', values='val_roc_auc')
+    sns.heatmap(pivot_auc, annot=True, fmt='.4f', cmap='YlOrRd', ax=axes[0,0])
+    axes[0,0].set_title('ROC-AUC Heatmap', fontsize=14, fontweight='bold')
     axes[0,0].set_xlabel('Num Leaves', fontsize=12)
     axes[0,0].set_ylabel('Learning Rate', fontsize=12)
     
-    # 2. PR-AUC by learning rate (for different num_leaves)
     for leaves in results_df['num_leaves'].unique():
         subset = results_df[results_df['num_leaves'] == leaves]
-        axes[0,1].plot(subset['learning_rate'], subset['val_pr_auc'], 
+        axes[0,1].plot(subset['learning_rate'], subset['val_roc_auc'], 
                        marker='o', label=f'leaves={leaves}', linewidth=2)
     axes[0,1].set_xlabel('Learning Rate', fontsize=12, fontweight='bold')
-    axes[0,1].set_ylabel('PR-AUC', fontsize=12, fontweight='bold')
-    axes[0,1].set_title('PR-AUC vs Learning Rate', fontsize=14, fontweight='bold')
+    axes[0,1].set_ylabel('ROC-AUC', fontsize=12, fontweight='bold')
+    axes[0,1].set_title('ROC-AUC vs Learning Rate', fontsize=14, fontweight='bold')
     axes[0,1].legend()
     axes[0,1].grid(True, alpha=0.3)
     
-    # 3. PR-AUC vs Num Leaves
     for lr in results_df['learning_rate'].unique():
         subset = results_df[results_df['learning_rate'] == lr]
-        axes[1,0].plot(subset['num_leaves'], subset['val_pr_auc'], 
+        axes[1,0].plot(subset['num_leaves'], subset['val_roc_auc'], 
                        marker='s', label=f'lr={lr}', linewidth=2)
     axes[1,0].set_xlabel('Num Leaves', fontsize=12, fontweight='bold')
-    axes[1,0].set_ylabel('PR-AUC', fontsize=12, fontweight='bold')
-    axes[1,0].set_title('PR-AUC vs Num Leaves', fontsize=14, fontweight='bold')
+    axes[1,0].set_ylabel('ROC-AUC', fontsize=12, fontweight='bold')
+    axes[1,0].set_title('ROC-AUC vs Num Leaves', fontsize=14, fontweight='bold')
     axes[1,0].legend()
     axes[1,0].grid(True, alpha=0.3)
     axes[1,0].set_xscale('log')
     
-    # 4. Recall vs Precision scatter
-    scatter = axes[1,1].scatter(results_df['val_recall'], results_df['val_precision'], 
-                                c=results_df['val_pr_auc'], cmap='viridis', 
-                                s=100, alpha=0.6)
-    axes[1,1].set_xlabel('Recall (Fraud Detection Rate)', fontsize=12, fontweight='bold')
-    axes[1,1].set_ylabel('Precision', fontsize=12, fontweight='bold')
-    axes[1,1].set_title('Recall-Precision Trade-off', fontsize=14, fontweight='bold')
-    plt.colorbar(scatter, ax=axes[1,1], label='PR-AUC')
-    axes[1,1].grid(True, alpha=0.3)
+    if 'val_recall' in results_df.columns and 'val_precision' in results_df.columns:
+        scatter = axes[1,1].scatter(results_df['val_recall'], results_df['val_precision'], 
+                                    c=results_df['val_roc_auc'], cmap='viridis', 
+                                    s=100, alpha=0.6)
+        axes[1,1].set_xlabel('Recall (Fraud Detection Rate)', fontsize=12, fontweight='bold')
+        axes[1,1].set_ylabel('Precision', fontsize=12, fontweight='bold')
+        axes[1,1].set_title('Recall-Precision Trade-off', fontsize=14, fontweight='bold')
+        plt.colorbar(scatter, ax=axes[1,1], label='ROC-AUC')
+        axes[1,1].grid(True, alpha=0.3)
+    else:
+        axes[1,1].axis('off')
     
     plt.suptitle('LightGBM Hyperparameter Tuning Results', fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig('data/lightgbm_tuning_results.png', dpi=150, bbox_inches='tight')
+    results_path = os.path.join(DATA_DIR, 'lightgbm_tuning_results.png')
+    plt.savefig(results_path, dpi=150, bbox_inches='tight')
     plt.show()
     
-    # Save results
-    results_df.to_csv('models/lightgbm_tuning_results.csv', index=False)
+    results_df.to_csv(os.path.join(MODELS_DIR, 'lightgbm_tuning_results.csv'), index=False)
     print("\n✅ Results saved to: models/lightgbm_tuning_results.csv")
     print("✅ Visualization saved to: data/lightgbm_tuning_results.png")
     
     return results_df
 
 
-def save_best_model(best_model, best_params, best_run_id, X_test, y_test):
-    """Save the best model and its metrics"""
+def save_best_model(best_model, best_params, best_run_id, X_test, y_test, test_metrics):
+    """Save the best model, log final metrics, and register the model."""
     print("\n" + "="*60)
     print("SAVING BEST MODEL")
     print("="*60)
@@ -436,10 +411,7 @@ def save_best_model(best_model, best_params, best_run_id, X_test, y_test):
     print(f"\n🏆 Best Configuration:")
     print(f"   Learning Rate: {best_params['learning_rate']}")
     print(f"   Num Leaves: {best_params['num_leaves']}")
-    print(f"   MLflow Run ID: {best_run_id}")
-    
-    # Calculate final metrics on test set
-    test_metrics = calculate_metrics(best_model, X_test, y_test, "Test")
+    print(f"   MLflow Best Trial Run ID: {best_run_id}")
     
     print(f"\n📊 Final Test Performance:")
     print(f"   PR-AUC: {test_metrics['pr_auc']:.4f}")
@@ -448,24 +420,20 @@ def save_best_model(best_model, best_params, best_run_id, X_test, y_test):
     print(f"   Fraud Precision: {test_metrics['fraud_precision']:.2%}")
     print(f"   False Positive Rate: {test_metrics['false_positive_rate']:.4%}")
     
-    # Generate final plots for best model
     print("\n🎨 Generating final artifacts for best model...")
     
-    # Feature importance
     importance_df = plot_feature_importance(
         best_model, X_test.columns, 
         best_params['learning_rate'], best_params['num_leaves'],
         'data/lightgbm_best_feature_importance.png'
     )
     
-    # ROC/PR curves
     plot_roc_pr_curves(
         best_model, X_test, y_test,
         best_params['learning_rate'], best_params['num_leaves'],
         'data/lightgbm_best_performance_curves.png'
     )
     
-    # Confusion matrix
     y_pred = (best_model.predict_proba(X_test)[:, 1] >= 0.5).astype(int)
     cm = confusion_matrix(y_test, y_pred)
     
@@ -480,11 +448,11 @@ def save_best_model(best_model, best_params, best_run_id, X_test, y_test):
     plt.savefig('data/lightgbm_best_confusion_matrix.png', dpi=150, bbox_inches='tight')
     plt.close()
     
-    # Save best model
-    joblib.dump(best_model, 'models/lightgbm_best_model.pkl')
-    print("✅ Best model saved to: models/lightgbm_best_model.pkl")
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    local_model_path = os.path.join(MODELS_DIR, 'fraud_detector_v1.pkl')
+    joblib.dump(best_model, local_model_path)
+    print(f"✅ Best model saved to: {local_model_path}")
     
-    # Save metrics
     best_metrics = {
         'best_params': best_params,
         'best_run_id': best_run_id,
@@ -493,38 +461,57 @@ def save_best_model(best_model, best_params, best_run_id, X_test, y_test):
         'top_features': importance_df.head(10)[['feature', 'importance']].to_dict('records')
     }
     
-    with open('models/lightgbm_best_metrics.json', 'w') as f:
+    with open(os.path.join(MODELS_DIR, 'fraud_detector_v1_metrics.json'), 'w') as f:
         json.dump(best_metrics, f, indent=2)
-    print("✅ Best metrics saved to: models/lightgbm_best_metrics.json")
+    print(f"✅ Best metrics saved to: {os.path.join(MODELS_DIR, 'fraud_detector_v1_metrics.json')}")
     
-    # Print top features
-    print("\n📈 Top 10 Most Important Features (Best Model):")
-    for i, row in importance_df.head(10).iterrows():
-        print(f"   {i+1}. {row['feature']}: {row['importance']:.4f}")
+    print("\n📦 Registering final model to MLflow Model Registry...")
+    with mlflow.start_run(run_name='Best_LightGBM_Final') as run:
+        mlflow.log_params(best_params)
+        mlflow.log_metrics({
+            'test_roc_auc': test_metrics['roc_auc'],
+            'test_pr_auc': test_metrics['pr_auc'],
+            'test_fraud_recall': test_metrics['fraud_recall'],
+            'test_fraud_precision': test_metrics['fraud_precision'],
+            'test_false_positive_rate': test_metrics['false_positive_rate']
+        })
+        mlflow.lightgbm.log_model(best_model, 'model')
+        model_uri = f"runs:/{run.info.run_id}/model"
+
+    try:
+        registered_model = mlflow.register_model(model_uri, MODEL_REGISTRY_NAME)
+        print(f"✅ Registered model '{MODEL_REGISTRY_NAME}' version {registered_model.version}")
+    except Exception as exc:
+        print(f"⚠️ Model registration failed: {exc}")
+        registered_model = None
     
-    return test_metrics
+    return test_metrics, local_model_path, registered_model
 
 
 def main():
     """Main execution"""
     
-    # Run hyperparameter tuning
-    all_results, best_params, best_model, best_run_id, data = tune_lightgbm()
-    X_train, X_val, X_test, y_train, y_val, y_test = data
+    # Run Optuna hyperparameter tuning
+    all_results, best_params, best_model, best_run_id, data = tune_lightgbm(n_trials=20)
+    X_train, X_val, X_test, y_train, y_val, y_test, test_metrics = data
     
     # Analyze results
     results_df = analyze_results(all_results)
     
-    # Save best model
-    test_metrics = save_best_model(best_model, best_params, best_run_id, X_test, y_test)
+    # Save and register best model
+    test_metrics, model_path, registered_model = save_best_model(
+        best_model, best_params, best_run_id, X_test, y_test, test_metrics
+    )
     
-    # Final summary
     print("\n" + "="*60)
     print("TUNING COMPLETE! SUMMARY")
     print("="*60)
-    print(f"\n✅ Total runs: {len(all_results)}")
-    print(f"✅ Best PR-AUC: {best_model.predict_proba(X_val)[:, 1]}")
-    print(f"✅ Best model saved with {best_params['learning_rate']} lr and {best_params['num_leaves']} leaves")
+    print(f"\n✅ Total trials: {len(all_results)}")
+    print(f"✅ Best validation ROC-AUC: {max([r['val_roc_auc'] for r in all_results]):.4f}")
+    print(f"✅ Final test ROC-AUC: {test_metrics['roc_auc']:.4f}")
+    print(f"✅ Local model saved to: {model_path}")
+    if registered_model is not None:
+        print(f"✅ Registered model: {MODEL_REGISTRY_NAME} (version {registered_model.version})")
     print(f"\n🔗 View all runs: mlflow ui")
     print(f"🌐 Then open: http://localhost:5000")
     

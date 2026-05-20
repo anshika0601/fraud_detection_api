@@ -1,0 +1,61 @@
+{
+  "best_params": {
+    "learning_rate": 0.18886836854277977,
+    "num_leaves": 255
+  },
+  "best_run_id": "d1f4bd1c2f624b6ab7faa195fb76b656",
+  "test_metrics": {
+    "roc_auc": 0.9755227833254855,
+    "pr_auc": 0.6817683186179642,
+    "accuracy": 0.998735999438222,
+    "fraud_recall": 0.8469387755102041,
+    "fraud_precision": 1.0,
+    "true_negatives": 56807,
+    "false_positives": 57,
+    "false_negatives": 15,
+    "true_positives": 83,
+    "false_positive_rate": 0.0010023916713562183
+  },
+  "top_features": [
+    {
+      "feature": "V11",
+      "importance": 56
+    },
+    {
+      "feature": "V1",
+      "importance": 53
+    },
+    {
+      "feature": "V14",
+      "importance": 50
+    },
+    {
+      "feature": "V10",
+      "importance": 50
+    },
+    {
+      "feature": "V16",
+      "importance": 49
+    },
+    {
+      "feature": "V12",
+      "importance": 48
+    },
+    {
+      "feature": "V24",
+      "importance": 46
+    },
+    {
+      "feature": "V13",
+      "importance": 44
+    },
+    {
+      "feature": "V7",
+      "importance": 42
+    },
+    {
+      "feature": "V9",
+      "importance": 41
+    }
+  ]
+}

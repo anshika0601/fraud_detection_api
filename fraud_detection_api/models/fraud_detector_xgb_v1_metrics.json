@@ -1,0 +1,27 @@
+{
+  "best_params": {
+    "objective": "binary:logistic",
+    "max_depth": 8,
+    "eta": 0.11200301110369187,
+    "subsample": 0.6505458671882711,
+    "colsample_bytree": 0.615980640025511,
+    "gamma": 1.4303653568693473,
+    "min_child_weight": 7,
+    "alpha": 0.658865040306359,
+    "lambda": 0.010400369986808065,
+    "scale_pos_weight": 2.0000100493422703,
+    "eval_metric": "aucpr",
+    "verbosity": 0,
+    "tree_method": "hist",
+    "nthread": -1,
+    "seed": 42
+  },
+  "test_metrics": {
+    "roc_auc": 0.9832220521860967,
+    "pr_auc": 0.8694430940918177,
+    "accuracy": 0.9992451107756047,
+    "fraud_recall": 0.8469387755102041,
+    "fraud_precision": 1.0,
+    "false_positive_rate": 0.0004924029262802476
+  }
+}
