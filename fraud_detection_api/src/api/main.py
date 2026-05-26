@@ -16,6 +16,13 @@ import joblib
 import logging
 from datetime import datetime
 import time
+import hashlib
+import json
+import uuid
+from contextvars import ContextVar
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 # Configure logging
 logging.basicConfig(
@@ -150,6 +157,139 @@ class MetricsResponse(BaseModel):
     avg_response_time_ms: float
 
 
+
+# ----------------------------------------------------------------------
+# Request context (for correlation IDs across logs)
+# ----------------------------------------------------------------------
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+# ----------------------------------------------------------------------
+# Custom logging formatter with request ID
+# ----------------------------------------------------------------------
+class RequestIDFilter(logging.Filter):
+    """Inject request_id into every log record."""
+    def filter(self, record):
+        record.request_id = request_id_ctx.get()
+        return True
+
+
+# Re-configure logger with request ID
+for handler in logging.root.handlers:
+    handler.addFilter(RequestIDFilter())
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(request_id)s] - %(name)s - %(levelname)s - %(message)s'
+    ))
+
+
+# ----------------------------------------------------------------------
+# Helper: hash input payload for audit trail (privacy-safe)
+# ----------------------------------------------------------------------
+def hash_payload(payload: dict) -> str:
+    """Generate SHA256 hash of request payload for audit/debugging."""
+    try:
+        serialized = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+    except Exception:
+        return "unhashable"
+
+
+# ----------------------------------------------------------------------
+# Logging Middleware
+# ----------------------------------------------------------------------
+class PredictionLoggingMiddleware(BaseHTTPMiddleware):
+    """
+    Logs every request with:
+    - timestamp
+    - unique request_id
+    - method + path
+    - input hash (SHA256, first 16 chars)
+    - response status
+    - latency
+    - prediction results (for /predict endpoint)
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # Generate correlation ID
+        req_id = str(uuid.uuid4())[:8]
+        request_id_ctx.set(req_id)
+
+        start_time = time.time()
+        timestamp = datetime.utcnow().isoformat()
+
+        # Capture request body for hashing (without consuming the stream)
+        body_bytes = await request.body()
+        input_hash = "no-body"
+        if body_bytes:
+            try:
+                payload = json.loads(body_bytes)
+                input_hash = hash_payload(payload)
+            except json.JSONDecodeError:
+                input_hash = hashlib.sha256(body_bytes).hexdigest()[:16]
+
+        # Reconstruct the body for downstream handlers
+        async def receive():
+            return {"type": "http.request", "body": body_bytes}
+        request._receive = receive
+
+        # Log incoming request
+        logger.info(
+            f"REQUEST | {request.method} {request.url.path} | "
+            f"input_hash={input_hash} | client={request.client.host if request.client else 'unknown'}"
+        )
+
+        # Process request
+        try:
+            response = await call_next(request)
+        except Exception as e:
+            logger.error(f"REQUEST_FAILED | error={str(e)}")
+            raise
+
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Capture response body for prediction logging (only for /predict)
+        response_log = ""
+        if request.url.path == "/predict" and response.status_code == 200:
+            # Read response body
+            response_body = b""
+            async for chunk in response.body_iterator:
+                response_body += chunk
+
+            try:
+                result = json.loads(response_body)
+                fraud_count = sum(result.get("predictions", []))
+                total = len(result.get("predictions", []))
+                avg_prob = (
+                    sum(result.get("probabilities", [])) / total if total > 0 else 0
+                )
+                response_log = (
+                    f" | predictions={total} | fraud_detected={fraud_count} | "
+                    f"avg_prob={avg_prob:.4f} | model_version={result.get('model_version', 'unknown')}"
+                )
+            except Exception as e:
+                response_log = f" | response_parse_error={e}"
+
+            # Rebuild the response since we consumed the body
+            response = Response(
+                content=response_body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+
+        # Log response
+        logger.info(
+            f"RESPONSE | status={response.status_code} | latency={latency_ms:.2f}ms"
+            f"{response_log}"
+        )
+
+        # Add correlation ID to response headers (useful for debugging)
+        response.headers["X-Request-ID"] = req_id
+        response.headers["X-Process-Time-Ms"] = f"{latency_ms:.2f}"
+
+        return response
+
 # ----------------------------------------------------------------------
 # FastAPI app
 # ----------------------------------------------------------------------
@@ -168,6 +308,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(PredictionLoggingMiddleware)
 
 # ----------------------------------------------------------------------
 # Model loading (once at startup)
