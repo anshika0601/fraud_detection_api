@@ -670,3 +670,55 @@ class TestPreprocessSafeCoverage:
                     importlib.reload(pp)
                 except Exception:
                     pass
+
+
+class TestMiddlewareAndAsync:
+    """Test middleware and async behavior"""
+
+    def test_request_id_in_response_headers(self):
+        """Middleware should add X-Request-ID to every response"""
+        response = client.get("/")
+        assert "X-Request-ID" in response.headers
+        assert "X-Process-Time-Ms" in response.headers
+        # Request ID should be 8 chars (UUID prefix)
+        assert len(response.headers["X-Request-ID"]) == 8
+
+    def test_request_id_is_unique_per_request(self):
+        """Each request should get a unique correlation ID"""
+        r1 = client.get("/")
+        r2 = client.get("/")
+        assert r1.headers["X-Request-ID"] != r2.headers["X-Request-ID"]
+
+    def test_predict_logs_input_hash(self, caplog):
+        """Middleware should log input hash for /predict"""
+        original = main_mod.model
+        try:
+            main_mod.model = MockModel()
+            main_mod.model_version = "mock-v1"
+            with caplog.at_level(logging.INFO):
+                response = client.post(
+                    "/predict", json={"transactions": [valid_transaction()]}
+                )
+            assert response.status_code == 200
+            # Check logs contain input hash
+            log_text = " ".join(record.message for record in caplog.records)
+            assert "input_hash=" in log_text
+            assert "REQUEST" in log_text
+            assert "RESPONSE" in log_text
+        finally:
+            main_mod.model = original
+
+    def test_async_predict_endpoint_works(self):
+        """Verify async predict still returns correct response"""
+        original = main_mod.model
+        try:
+            main_mod.model = MockModel()
+            main_mod.model_version = "mock-v1"
+            response = client.post(
+                "/predict", json={"transactions": [valid_transaction()]}
+            )
+            assert response.status_code == 200
+            assert "predictions" in response.json()
+            assert "latency_ms" in response.json()
+        finally:
+            main_mod.model = original
