@@ -23,6 +23,17 @@ from contextvars import ContextVar
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Thread pool for CPU-bound ML inference (so it doesn't block the event loop)
+ML_THREAD_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml-inference")
+
+
+async def run_in_threadpool(func, *args, **kwargs):
+    """Run blocking function in a thread pool to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(ML_THREAD_POOL, lambda: func(*args, **kwargs))
 
 # Configure logging
 logging.basicConfig(
@@ -378,15 +389,17 @@ def load_model():
 
 @app.on_event("startup")
 async def startup_event():
-    load_model()
+    # Load model in a thread pool to not block startup
+    await run_in_threadpool(load_model)
     logger.info("Fraud Detection API started")
+    logger.info(f"ML thread pool: {ML_THREAD_POOL._max_workers} workers")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Fraud Detection API shutting down")
-
-
+    logger.info("Shutting down ML thread pool...")
+    ML_THREAD_POOL.shutdown(wait=True)
+    logger.info("Fraud Detection API shut down cleanly")
 # ----------------------------------------------------------------------
 # Helper: convert transaction list to DataFrame
 # ----------------------------------------------------------------------
@@ -475,15 +488,13 @@ async def predict(request: PredictionRequest):
     start_time = time.time()
 
     try:
+        # DataFrame conversion (lightweight, can stay sync)
         df = transactions_to_df(request.transactions)
 
-        # -------------------- COLUMN VALIDATION --------------------
-        # Determine the features the model was trained on
-         # 1. Check for empty DataFrame
+        # -------------------- INPUT VALIDATION --------------------
         if df.empty or len(df) == 0:
             raise ValueError("Input DataFrame is empty (zero rows)")
-            
-            
+
         expected_features = None
         try:
             if model is not None:
@@ -502,27 +513,16 @@ async def predict(request: PredictionRequest):
 
             missing_cols = required - actual
             if missing_cols:
-                raise ValueError(
-                    f"Input is missing required feature columns: {sorted(missing_cols)}"
-                )
+                raise ValueError(f"Input is missing required feature columns: {sorted(missing_cols)}")
 
             extra_cols = actual - set(expected_features)
             if extra_cols:
-                raise ValueError(
-                    f"Input contains unexpected extra columns: {sorted(extra_cols)}"
-                )
+                raise ValueError(f"Input contains unexpected extra columns: {sorted(extra_cols)}")
 
-            # Also check for NaN in required features
-            nan_cols = [
-                c for c in required
-                if c in df.columns and df[c].isna().any()
-            ]
+            nan_cols = [c for c in required if c in df.columns and df[c].isna().any()]
             if nan_cols:
-                raise ValueError(
-                    f"Input contains NaN in required features: {sorted(nan_cols)}"
-                )
+                raise ValueError(f"Input contains NaN in required features: {sorted(nan_cols)}")
         else:
-            # Fallback: validate against the default 30-column schema
             fallback_cols = [
                 'Time', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9',
                 'V10', 'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18',
@@ -531,37 +531,36 @@ async def predict(request: PredictionRequest):
             ]
             missing_cols = set(fallback_cols) - set(df.columns)
             if missing_cols:
-                raise ValueError(
-                    f"Input is missing required feature columns: {sorted(missing_cols)}"
-                )
+                raise ValueError(f"Input is missing required feature columns: {sorted(missing_cols)}")
             extra_cols = set(df.columns) - set(fallback_cols)
             if extra_cols:
-                raise ValueError(
-                    f"Input contains unexpected extra columns: {sorted(extra_cols)}"
-                )
-        # -----------------------------------------------------------
+                raise ValueError(f"Input contains unexpected extra columns: {sorted(extra_cols)}")
 
+        # ---------- ASYNC ML INFERENCE (offloaded to thread pool) ----------
         if hasattr(model, "predict_proba"):
-            probabilities = model.predict_proba(df)[:, 1].tolist()
-            logger.debug("Using model.predict_proba")
+            proba_result = await run_in_threadpool(model.predict_proba, df)
+            probabilities = proba_result[:, 1].tolist()
+            logger.debug("Using model.predict_proba (async)")
         elif (
             model.__class__.__module__.startswith("xgboost")
             or model.__class__.__name__.lower() in {"booster", "xgbclassifier"}
         ):
             import xgboost as xgb
-            dmatrix = xgb.DMatrix(df)
-            raw = model.predict(dmatrix)
+            def _xgb_predict():
+                dmatrix = xgb.DMatrix(df)
+                return model.predict(dmatrix)
+            raw = await run_in_threadpool(_xgb_predict)
             probabilities = np.asarray(raw).reshape(-1).astype(float).tolist()
-            logger.debug("Using xgboost.DMatrix + model.predict")
         elif hasattr(model, "predict"):
-            probabilities = np.asarray(model.predict(df)).reshape(-1).astype(float).tolist()
-            logger.debug("Using model.predict")
+            raw = await run_in_threadpool(model.predict, df)
+            probabilities = np.asarray(raw).reshape(-1).astype(float).tolist()
         else:
             raise AttributeError("Loaded model does not support predict_proba or predict")
 
         predictions = [1 if p >= 0.5 else 0 for p in probabilities]
         latency_ms = (time.time() - start_time) * 1000
 
+        # Metrics update (sync, very fast)
         update_metrics(
             fraud_count=sum(predictions),
             response_time_ms=latency_ms,
