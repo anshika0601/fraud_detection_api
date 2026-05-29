@@ -27,13 +27,13 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 # Thread pool for CPU-bound ML inference (so it doesn't block the event loop)
-ML_THREAD_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml-inference")
-
-
-async def run_in_threadpool(func, *args, **kwargs):
+async def run_in_threadpool(func, *args, executor=None, **kwargs):
     """Run blocking function in a thread pool to avoid blocking the event loop."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(ML_THREAD_POOL, lambda: func(*args, **kwargs))
+    if executor is None:
+        # Fallback to default executor if not provided
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
 
 # Configure logging
 logging.basicConfig(
@@ -346,11 +346,19 @@ def load_model():
             return
 
         # Some serialized XGBoost artifacts are raw boosters (xgboost.core.Booster)
-        # which don't expose predict_proba. Tests expect model.predict_proba to exist so it can be patched.
-        if not hasattr(loaded, "predict_proba") and hasattr(loaded, "predict") and hasattr(loaded, "get_booster") is False:
-            # Wrap booster with a minimal predict_proba interface.
+        # which don't expose predict_proba.
+        #
+        # IMPORTANT: During startup we must not hard-depend on the `xgboost` Python
+        # package. If xgboost isn't installed, importing it would crash model loading.
+        # In that case we either keep the loaded object (for environments where
+        # predict() is available) or fall back to LightGBM.
+        if (
+            not hasattr(loaded, "predict_proba")
+            and hasattr(loaded, "predict")
+            and hasattr(loaded, "get_booster") is False
+        ):
             try:
-                import xgboost as xgb
+                import xgboost as xgb  # noqa: F401
 
                 class _BoosterPredictProbaWrapper:
                     def __init__(self, booster):
@@ -374,6 +382,26 @@ def load_model():
 
                 model = _BoosterPredictProbaWrapper(loaded)
                 logger.info("Wrapped raw XGBoost Booster with predict_proba adapter")
+            except ModuleNotFoundError:
+                # xgboost is not installed; wrapper can't be built.
+                # We'll attempt fallback if available.
+                if os.path.exists(FALLBACK_MODEL_PATH):
+                    try:
+                        loaded_fallback = joblib.load(FALLBACK_MODEL_PATH)
+                        model = loaded_fallback
+                        model_version = "lightgbm_best_v1"
+                        logger.info(
+                            "xgboost not installed; fell back to LightGBM model"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"xgboost not installed and fallback load failed: {e}"
+                        )
+                        model = None
+                        model_version = "error"
+                else:
+                    model = None
+                    model_version = "error"
             except Exception as e:
                 logger.warning(f"Could not wrap booster with predict_proba: {e}")
                 model = loaded
@@ -389,17 +417,22 @@ def load_model():
 
 @app.on_event("startup")
 async def startup_event():
-    # Load model in a thread pool to not block startup
-    await run_in_threadpool(load_model)
+    # Create a new executor per app instance
+    app.state.ml_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml-inference")
+    # Load model using this executor
+    await run_in_threadpool(load_model, executor=app.state.ml_executor)
     logger.info("Fraud Detection API started")
-    logger.info(f"ML thread pool: {ML_THREAD_POOL._max_workers} workers")
+    logger.info(f"ML thread pool: {app.state.ml_executor._max_workers} workers")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Shutting down ML thread pool...")
-    ML_THREAD_POOL.shutdown(wait=True)
-    logger.info("Fraud Detection API shut down cleanly")
+    executor = getattr(app.state, "ml_executor", None)
+    if executor is not None:
+        logger.info("Shutting down ML thread pool...")
+        executor.shutdown(wait=True)
+        logger.info("Fraud Detection API shut down cleanly")
+
 # ----------------------------------------------------------------------
 # Helper: convert transaction list to DataFrame
 # ----------------------------------------------------------------------
@@ -479,11 +512,23 @@ async def get_metrics():
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Inference"])
 async def predict(request: PredictionRequest):
+
     if model is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model not loaded. Please contact administrator.",
-        )
+       raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model not loaded. Please contact administrator.",)
+
+    executor = getattr(app.state, "ml_executor", None)
+    if executor is None:
+       raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="ML executor not initialized. Please contact administrator.",
+    )
+
+    # Check if executor has been shut down (can happen in tests or after graceful shutdown)
+    if executor._shutdown:
+        app.state.ml_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml-inference")
+        executor = app.state.ml_executor
+        logger.info("Recreated ML executor (previous was shut down)")
 
     start_time = time.time()
 
@@ -538,7 +583,7 @@ async def predict(request: PredictionRequest):
 
         # ---------- ASYNC ML INFERENCE (offloaded to thread pool) ----------
         if hasattr(model, "predict_proba"):
-            proba_result = await run_in_threadpool(model.predict_proba, df)
+            proba_result = await run_in_threadpool(model.predict_proba, df, executor=executor)
             probabilities = proba_result[:, 1].tolist()
             logger.debug("Using model.predict_proba (async)")
         elif (
@@ -546,13 +591,15 @@ async def predict(request: PredictionRequest):
             or model.__class__.__name__.lower() in {"booster", "xgbclassifier"}
         ):
             import xgboost as xgb
+
             def _xgb_predict():
                 dmatrix = xgb.DMatrix(df)
                 return model.predict(dmatrix)
-            raw = await run_in_threadpool(_xgb_predict)
+
+            raw = await run_in_threadpool(_xgb_predict, executor=executor)
             probabilities = np.asarray(raw).reshape(-1).astype(float).tolist()
         elif hasattr(model, "predict"):
-            raw = await run_in_threadpool(model.predict, df)
+            raw = await run_in_threadpool(model.predict, df, executor=executor)
             probabilities = np.asarray(raw).reshape(-1).astype(float).tolist()
         else:
             raise AttributeError("Loaded model does not support predict_proba or predict")
@@ -583,6 +630,7 @@ async def predict(request: PredictionRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Prediction failed: {str(e)}",
         )
+  
 # ----------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------
