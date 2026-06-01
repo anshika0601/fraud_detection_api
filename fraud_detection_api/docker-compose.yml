@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  fraud-detector-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fraud-detector-api
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./models:/models:ro
+      - ./logs:/logs
+    environment:
+      - PORT=8003
+      - HOST=0.0.0.0
+      - MODEL_PATH=/models/fraud_detector_xgb_v1.pkl
+      - FALLBACK_MODEL_PATH=/models/lightgbm_best_model.pkl
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - fraud-detection
+
+networks:
+  fraud-detection:
+    driver: bridge
